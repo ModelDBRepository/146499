@@ -1,0 +1,464 @@
+    function varargout = OneIzhikevichNetworkSimulator(varargin)
+
+gui_Singleton = 1;
+gui_State = struct('gui_Name',       mfilename, ...
+                   'gui_Singleton',  gui_Singleton, ...
+                   'gui_OpeningFcn', @OneIzhikevichNetworkSimulator_OpeningFcn, ...
+                   'gui_OutputFcn',  @OneIzhikevichNetworkSimulator_OutputFcn, ...
+                   'gui_LayoutFcn',  [] , ...
+                   'gui_Callback',   []);
+if nargin && ischar(varargin{1})
+    gui_State.gui_Callback = str2func(varargin{1});
+end
+
+if nargout
+    [varargout{1:nargout}] = gui_mainfcn(gui_State, varargin{:});
+else
+    gui_mainfcn(gui_State, varargin{:});
+end
+
+
+
+
+
+
+
+function plotbutton_Callback(hObject, eventdata, handles)
+global hfig_graphics
+
+%% DECLARE PARAMETERS
+
+
+
+%These are the indidivdual parameters for the Izhikevich Neuron
+C = str2double(get(handles.C_,'string')); %Capacitance
+vr = str2double(get(handles.vrest_,'string')); %Resting Membrane Potential
+b = str2double(get(handles.b_,'string')); %Resonator/Integrator Variable
+k = str2double(get(handles.k_,'string')); %Spike Width Factor
+vpeak = str2double(get(handles.vpeak_,'string')); %Spike peak
+Tsyn = str2double(get(handles.Tsyn_,'string')); %Synaptic time constant
+Smax = str2double(get(handles.Smax_,'string')); %Jump in the conductance
+c = str2double(get(handles.vreset_,'string')); %voltage reset
+T = str2double(get(handles.T_,'string')); %Total simulation time
+vt=vr+40-(b/k); %threshold 
+Er = 0; %Reversal Potential 
+%------------------------------------------------------------------
+%------------Network Specific Parameters--------------------
+I = str2double(get(handles.I_,'string')) ;  %Applied Current 
+N = str2double(get(handles.N_,'string')); %Number of neurons 
+g = str2double(get(handles.g_,'string')); %maximal conductance 
+
+
+%This next command is used to initialize the mean adaptation variable
+u = str2double(get(handles.uint_,'string'))*ones(N,1);
+
+
+%This next comamnd is use to initialize the synaptic gating variables
+S = str2double(get(handles.Sint_,'string'))*ones(N,1);
+
+
+
+a = str2double(get(handles.a_,'string'));  %reciprocal of adaptation decay time 
+d = str2double(get(handles.d_,'string'));  %adaptation jump 
+
+%-----------Euler integration parameters ------------------
+dt = 0.01; % Euler Integration Step; 
+%----------Other parameters
+
+%-----Initialization---------------------------------------------
+v = vr+(vpeak-vr)*rand(N,1); %initial distribution 
+
+
+v_ = v; %These are just used for Euler integration, previous time step storage
+
+%---------Storage matrices --------------------------------------
+vstore = zeros(T/dt,2); %store v
+ustore = zeros(T/dt,2); %store u 
+sstore = zeros(T/dt,1); %store u 
+
+Neuron_Number1 = ceil(N*rand);  % Pick neuron from the network to store data to 
+v(Neuron_Number1) = c;  %initialize the neuron with the same membrane potential
+
+handles.N = N;  
+in = zeros(N,1); %Initialize the spike firing index for network 1 
+tspike = zeros(N,120); %storage matix for spike time 
+DTspike = size(tspike); 
+
+
+
+
+%Store the initial conditions for the designated neurons 
+sstore(1,:) = [g*S(Neuron_Number1)];
+vstore(1,:) = [v(Neuron_Number1),mean(v)]; %Store v
+ustore(1,:) = [u(Neuron_Number1),mean(u)]; %Store u
+%% SIMULATION
+tic
+for i = 0:T/dt; 
+%% EULER INTEGRATE
+%This command is used to change the value of k so that the subthreshold and
+%superthreshold response are different enough to get the right spike width.
+% k = 5*(v>vt) + (v<vt)*0.15;
+%-------------------Euler integration--------------------
+v = v + dt*(( k.*(v-vr).*(v-vt) - u + I + g*(Er-v).*S)/C) ; % v(t) = v(t-1)+dt*v'(t-1)
+
+u = u + dt*(a*(b*(v_-vr)-u)); %same with u, the v_ term makes it so that the integration of u uses v(t-1), instead of the updated v(t)
+
+%--------------------------------------------------------
+
+
+
+%-----Store spike times command ---------------------------------
+logic = (v>=vpeak); %Figure out which neurons are firing
+if sum(logic)>0 
+in = in + (logic); %Compute the total number of spikes fired
+if max(in)>max(DTspike(2))
+     tspike(:,end+1:end+10) = zeros(N,10);
+     DTspike = size(tspike);
+end
+n = find(logic); %Find the neurons that specifically fired a spike
+tspike(sub2ind(DTspike,n,in(n)))=dt*i;
+end
+%tspike(n,in(n)) = dt*i; %Store the time they fired it.  
+
+%------------------------------------------------------------------
+
+%% COMPUTE S, APPLY RESETS
+index = find((v>Er).*(v_<Er)); %this command finds the neurons in network 1 that have crossed the reversal potential 
+if isempty(index)==1  %If no spikes have fired, just implement the exponential decay in the conductances from network 1 to its postsynaptic connections
+S = S+dt*(-S/Tsyn); 
+
+else
+xs1 = SMAX(:,index)'; %This command draws only the columns of SMAX that are from the presynaptic firing neurons 
+j = size(index); %Compute the number of neurons that have simultaneously fired in this network 
+if j(1)>1, %If there are multiple neurons, we add the row sum to SIJ and implement exponential decay
+S = S + dt*(-S/Tsyn)+ sum(xs1)'/neff;
+
+else  %If only one neuron fired, simply add the relevant column of SMAXIJ to SIJ, and implement exponential decay
+S = S + dt*(-S/Tsyn) + xs1'/neff;
+end
+end
+
+
+S = S + (1-S).*(S>1); %These commands bound each SIJ so that they cannot exceed 1.  
+
+
+u = u + d*(v>=vpeak);  %implements set u to u+d if v>vpeak, component by component. 
+
+
+v = v+(c-v).*(v>=vpeak); %implements v = c if v>vpeak add 0 if false, add c-v if true, v+c-v = c
+v_ = v;  % sets v(t-1) = v for the next itteration of loop
+
+
+
+
+vstore(i+1,:) = [v(Neuron_Number1),mean(v)]; %store v
+ustore(i+1,:) = [u(Neuron_Number1),mean(u)]; %sotre u 
+sstore(i+1,:) = [g*S(Neuron_Number1)]; %store the conductances
+end
+toc
+% PLOTTING AND STORAGE
+
+ handles.tspike = tspike; 
+
+% 
+%Plotting V
+axes(hfig_graphics.vplot);
+  cla(hfig_graphics.vplot,'reset')
+ plot(0:dt:T,vstore), hold on %plotting v 
+ plot(tspike(Neuron_Number1,:),vpeak + 0*tspike(Neuron_Number1,:),'*k')
+ ylabel('v')
+
+
+% %Plotting U
+ axes(hfig_graphics.uplot);
+ cla(hfig_graphics.uplot,'reset')
+ plot(0:dt:T,ustore), hold on %plotting u
+ylabel('u')
+
+
+ axes(hfig_graphics.splot);
+
+ cla(hfig_graphics.splot,'reset')
+ plot(0:dt:T,sstore(:,1)), hold on %plotting u
+ylabel('g(t)')
+
+%plot the mean voltage, adaptation, and conductance in a different figure
+figure(100)
+subplot(3,1,1)
+ plot(0:dt:T,vstore(:,2)), hold on %plotting u
+ylabel('$\langle v(t)\rangle$','Interpreter','LaTeX','FontSize',14)
+xlabel('Time (ms)','Interpreter','LaTeX','FontSize',14)
+subplot(3,1,2)
+ plot(0:dt:T,ustore(:,2)), hold on %plotting u
+ylabel('$\langle W(t)\rangle$','Interpreter','LaTeX','FontSize',14)
+xlabel('Time (ms)','Interpreter','LaTeX','FontSize',14)
+
+subplot(3,1,3)
+ plot(0:dt:T,sstore(:,1)), hold on %plotting u
+ylabel('$g(t)$','Interpreter','LaTeX','FontSize',14)
+xlabel('Time (ms)','Interpreter','LaTeX','FontSize',14)
+
+
+
+
+guidata(hObject, handles);
+
+
+
+function rasterplots_Callback(hObject, eventdata, handles)
+figure(10)
+%Plot the spike time raster plots for 25 neurons in a new figure
+if handles.N>25; j = 25; else j = handles.N; end
+for ner = 1:j 
+    st = handles.tspike(ner,:); 
+    st = st(st~=0); 
+    plot(st,ner*ones,'k*'), hold on    
+end
+xlabel('Time (ms)')
+ylabel('Neuron Index')
+
+
+guidata(hObject,handles)
+
+% --- Executes on button press in QSSA.
+function QSSA_Callback(hObject, eventdata, handles)
+global hfig_graphics
+C = str2double(get(handles.C_,'string')); %Capacitance
+vr = str2double(get(handles.vrest_,'string')); %Resting Membrane Potential
+b = str2double(get(handles.b_,'string')); %Resonator/Integrator Variable
+k = str2double(get(handles.k_,'string')); %Spike Width Factor
+vpeak = str2double(get(handles.vpeak_,'string')); %Spike peak
+Tsyn = str2double(get(handles.Tsyn_,'string')); %Synaptic time constant
+Smax = str2double(get(handles.Smax_,'string')); %Jump in the conductance
+c = str2double(get(handles.vreset_,'string')); %voltage reset
+T = str2double(get(handles.T_,'string')); %Total simulation time
+vt=vr+40-(b/k); %threshold 
+Er = 0; %Reversal Potential 
+I = str2double(get(handles.I_,'string')) ;  %Applied Curren
+g = str2double(get(handles.g_,'string'));  %synaptic conductance 
+a = str2double(get(handles.a_,'string'));  %reciprocal of adaptation decay time 
+d = str2double(get(handles.d_,'string'));  %adaptation jump 
+uint = str2double(get(handles.uint_,'string')); %initialize the mean adaptation and synaptic gating variable
+sint = str2double(get(handles.Sint_,'string'));
+%Dimensionless Parameters
+alpha = 1+vt/abs(vr) 
+g = g/(k*abs(vr))
+sint
+wint = uint/(k*vr^2)
+I = I/(k*vr^2)
+er = 1+Er/abs(vr)
+vpeak = 1 + vpeak/abs(vr)
+vreset = 1 + c/abs(vr)
+wjump = d/(k*vr^2)
+sjump = Smax
+T = T*k*abs(vr)/C 
+ts = Tsyn*k*abs(vr)/C
+tw = (1/a)*(k*abs(vr))/C
+%Simulate the mean field equations with the parameters from the GUI
+%(Simulations are in dimensionless coordinates)
+[t,y] = ode45(@(t,y) ONEIZNETWORKQSSA(alpha,g,I,er,vpeak,vreset,ts,tw,sjump,wjump,t,y)',[0,T],[sint,wint]');
+
+
+%Plot dimensional adaptation variable (w/u) 
+ axes(hfig_graphics.uplot);
+ plot(C*t/(k*abs(vr)),k*(vr^2)*y(:,2),'r','LineWidth',2), hold on %plotting u
+ylabel('u')
+
+%Plot dimensional conductance
+ axes(hfig_graphics.splot);
+ plot(C*t/(k*abs(vr)),k*abs(vr)*g*y(:,1),'r','LineWidth',2  ), hold on %plotting g
+ylabel('g(t)')
+
+%Plot all the variables of interest in a new figure.  
+figure(100)
+subplot(3,1,2)
+plot(C*t/(k*abs(vr)),k*(vr^2)*y(:,2),'r','LineWidth',2), hold on 
+ylabel('$W(t)$','Interpreter','LaTeX','FontSize',14)
+xlabel('Time (ms)','Interpreter','LaTeX','FontSize',14)
+
+subplot(3,1,3)
+plot(C*t/(k*abs(vr)),k*abs(vr)*g*y(:,1),'r','LineWidth',2  ), hold on %plotting g
+ylabel('$g(t)$','Interpreter','LaTeX','FontSize',14)
+xlabel('Time (ms)','Interpreter','LaTeX','FontSize',14)
+
+
+
+
+guidata(hObject,handles)
+
+
+
+
+
+function CLEARPLOTS_Callback(hObject, eventdata, handles)
+%this call back plots the average derivative of a_ neuron in the network
+%Plotting V
+global hfig_graphics
+
+axes(hfig_graphics.vplot);
+cla(hfig_graphics.vplot,'reset')
+
+axes(hfig_graphics.uplot);
+cla(hfig_graphics.uplot,'reset')
+
+axes(hfig_graphics.splot);
+cla(hfig_graphics.splot,'reset')
+
+axes(hfig_graphics.rplot);
+cla(hfig_graphics.rplot,'reset')
+
+
+guidata(hObject,handles)
+
+
+
+function OneIzhikevichNetworkSimulator_OpeningFcn(hObject, eventdata, handles, varargin)
+plots;
+global hfig_graphics
+handles.output = hObject;
+guidata(hObject, handles);
+function rplot_Callback(hObject, eventdata, handles)
+function globalu_Callback(hObject, eventdata, handles)
+function alltoall_Callback(hObject, eventdata, handles)
+function Tsyn__Callback(hObject, eventdata, handles)
+function Tsyn__CreateFcn(hObject, eventdata, handles)
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function Smax__Callback(hObject, eventdata, handles)
+function Smax__CreateFcn(hObject, eventdata, handles)
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function N__Callback(hObject, eventdata, handles)
+function N__CreateFcn(hObject, eventdata, handles)
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function varargout = OneIzhikevichNetworkSimulator_OutputFcn(hObject, eventdata, handles) 
+
+plots
+varargout{1} = handles.output;
+function C__Callback(hObject, eventdata, handles)
+function C__CreateFcn(hObject, eventdata, handles)
+
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function k__Callback(hObject, eventdata, handles)
+function k__CreateFcn(hObject, eventdata, handles)
+
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function vreset__Callback(hObject, eventdata, handles)
+function vreset__CreateFcn(hObject, eventdata, handles)
+
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function vpeak__Callback(hObject, eventdata, handles)
+function vpeak__CreateFcn(hObject, eventdata, handles)
+
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function vrest__Callback(hObject, eventdata, handles)
+function vrest__CreateFcn(hObject, eventdata, handles)
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function a__Callback(hObject, eventdata, handles)
+function a__CreateFcn(hObject, eventdata, handles)
+
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function b__Callback(hObject, eventdata, handles)
+function b__CreateFcn(hObject, eventdata, handles)
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function d__Callback(hObject, eventdata, handles)
+function d__CreateFcn(hObject, eventdata, handles)
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function T__Callback(hObject, eventdata, handles)
+function T__CreateFcn(hObject, eventdata, handles)
+
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function rastplot_Callback(hObject, eventdata, handles)
+function kde_Callback(hObject, eventdata, handles)
+function qflux_Callback(hObject, eventdata, handles)
+function pushbutton39_Callback(hObject, eventdata, handles)
+
+function Sint__Callback(hObject, eventdata, handles)
+function Sint__CreateFcn(hObject, eventdata, handles)
+% hObject    handle to Sint_ (see GCBO)
+% eventdata  reserved - to be defined in a_ future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a_ white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function uint__Callback(hObject, eventdata, handles)
+function uint__CreateFcn(hObject, eventdata, handles)
+% hObject    handle to uint_ (see GCBO)
+% eventdata  reserved - to be defined in a_ future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a_ white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function g__Callback(hObject, eventdata, handles)
+function g__CreateFcn(hObject, eventdata, handles)
+% hObject    handle to g_ (see GCBO)
+% eventdata  reserved - to be defined in a_ future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a_ white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function I__Callback(hObject, eventdata, handles)
+function I__CreateFcn(hObject, eventdata, handles)
+% hObject    handle to I_ (see GCBO)
+% eventdata  reserved - to be defined in a_ future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a_ white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function a_Callback(hObject, eventdata, handles)
+function a_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to a_ (see GCBO)
+% eventdata  reserved - to be defined in a_ future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a_ white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+function d_Callback(hObject, eventdata, handles)
+function d_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to d_ (see GCBO)
+% eventdata  reserved - to be defined in a_ future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a_ white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
